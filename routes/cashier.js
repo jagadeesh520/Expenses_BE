@@ -97,64 +97,55 @@ router.post(
   async (req, res) => {
     try {
       const customer = new Payment({
-        // ========================
-        // BASIC & PERSONAL DETAILS
-        // ========================
+
+        // REGION
+        region: req.body.region,
+
+        // BASIC DETAILS
         email: req.body.email,
         title: req.body.title,
         fullName: req.body.fullName,
         surname: req.body.surname,
+        name: `${req.body.fullName} ${req.body.surname}`,
+        gender: req.body.gender,
+        age: req.body.age,
+        mobile: req.body.mobile,
+        maritalStatus: req.body.maritalStatus,
 
-        name: req.body.fullName + " " + req.body.surname, // Combined for display
-        phone: req.body.mobileNumber,
+        // DT CAMP
+        dtcAttended: req.body.dtcAttended,
+        dtcWhen: req.body.dtcWhen,
+        dtcWhere: req.body.dtcWhere,
+
+        // DISTRICT + EGF
         district: req.body.district,
         iceuEgf: req.body.iceuEgf,
 
-        // DT CAMP (spiritual requirement)
-        attendedDtCamp: req.body.attendedDtCamp,
-        dtCampYear: req.body.dtCampYear,
-        dtCampPlace: req.body.dtCampPlace,
+        // RECOMMENDATION
+        recommendedByRole: req.body.recommendedByRole,
+        recommenderContact: req.body.recommenderContact,
 
-        // ========================
+        // GROUP TYPE
+        groupType: req.body.groupType,
+
         // FAMILY DETAILS
-        // ========================
-        groupType: req.body.groupType, // Family, employed, unemployed, volunteer, etc.
-        gender: req.body.gender,
-        age: req.body.age,
-
         spouseAttending: req.body.spouseAttending,
         spouseName: req.body.spouseName,
 
-        // Children below 10
-        childrenBelow10Count: req.body.childrenBelow10Count,
-        childrenBelow10Names: req.body.childrenBelow10Names,
+        childBelow10Count: req.body.childBelow10Count,
+        childBelow10Names: req.body.childBelow10Names,
 
-        // Children 10–14
-        children10to14Count: req.body.children10to14Count,
-        children10to14Names: req.body.children10to14Names,
+        child10to14Count: req.body.child10to14Count,
+        child10to14Names: req.body.child10to14Names,
 
-        // Total family members
-        familyMemberCount: req.body.familyMemberCount,
+        totalFamilyMembers: req.body.totalFamilyMembers,
+        delegatesOther: req.body.delegatesOther,
 
-        // Delegates other than family
-        otherDelegates: req.body.otherDelegates,
-
-        // ========================
-        // RECOMMENDATION DETAILS
-        // ========================
-        recommendedBy: req.body.recommendedBy,
-        recommenderName: req.body.recommenderName,
-        recommenderMobile: req.body.recommenderMobile,
-
-        // ========================
         // PAYMENT DETAILS
-        // ========================
-        registrationCategory: req.body.registrationCategory, 
-        totalAmount: Number(req.body.totalAmount) || 0,
         amountPaid: Number(req.body.amountPaid) || 0,
+        paymentMode2: req.body.paymentMode2,
         dateOfPayment: req.body.dateOfPayment,
         transactionId: req.body.transactionId,
-        modeOfPayment: req.body.modeOfPayment,
 
         transactions: req.body.amountPaid
           ? [
@@ -166,16 +157,15 @@ router.post(
             ]
           : [],
 
-        // ========================
         // ARRIVAL DETAILS
-        // ========================
         arrivalDay: req.body.arrivalDay,
         arrivalTime: req.body.arrivalTime,
 
-        // ========================
-        // FILE UPLOAD
-        // ========================
+        // FILE
         paymentScreenshot: req.file ? req.file.filename : "",
+
+        // AUTO – you can calculate later
+        totalAmount: Number(req.body.totalAmount) || 0,
       });
 
       customer.recalculate();

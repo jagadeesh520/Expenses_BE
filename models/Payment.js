@@ -7,44 +7,69 @@ const transactionSchema = new mongoose.Schema({
 });
 
 const paymentSchema = new mongoose.Schema({
+  // REGION
+  region: {
+    type: String,
+    required: true,
+    enum: ["East Rayalaseema", "West Rayalaseema"]
+  },
 
-  // BASIC DETAILS
-  name: { type: String, required: true },
-  age: Number,
+  // PERSONAL DETAILS
+  email: String,
+  title: String,
+  fullName: String,
+  surname: String,
+  name: String, // fullName + surname
   gender: String,
-  contactNumber: String,
-  phone: String,    // mapping from contactNumber
-  address: String,
-  profession: String,
+  age: Number,
+  mobile: String,
+  maritalStatus: String,
 
-  // FAMILY DETAILS
-  married: String,
-  spouseName: String,
-  childrenCount: String,
-  child1Name: String,
-  child1Age: String,
-  child2Name: String,
-  child2Age: String,
-  child3Name: String,
-  child3Age: String,
+  // DT CAMP DETAILS
+  dtcAttended: String,
+  dtcWhen: String,
+  dtcWhere: String,
 
-  // EU/EGF DETAILS
+  // DISTRICT + EGF
   district: String,
-  euEgf: String,
-  inLocalCommittee: String,
-  localRole: String,
+  iceuEgf: String,
 
   // RECOMMENDATION
   recommendedByRole: String,
-  recommenderName: String,
-  recommenderMobile: String,
+  recommenderContact: String,
 
-  // REGISTRATION CATEGORY
-  registrationCategory: String,
+  // GROUP TYPE
+  groupType: String,
+
+  // FAMILY DETAILS
+  spouseAttending: String,
+  spouseName: String,
+
+  childBelow10Count: String,
+  childBelow10Names: String,
+
+  child10to14Count: String,
+  child10to14Names: String,
+
+  totalFamilyMembers: String,
+  delegatesOther: String,
 
   // PAYMENT DETAILS
-  totalAmount: { type: Number, required: true },
-  paidAmount: { type: Number, default: 0 },
+  amountPaid: { type: Number, default: 0 },
+  paymentMode2: String,
+  dateOfPayment: String,
+  transactionId: String,
+  paymentScreenshot: String,
+
+  // ARRIVAL DETAILS
+  arrivalDay: String,
+  arrivalTime: String,
+
+  // TRANSACTION HISTORY
+  transactions: [transactionSchema],
+
+  // AUTO-CALCULATED FIELDS
+  totalAmount: { type: Number, default: 0 },
   balance: { type: Number, default: 0 },
   status: {
     type: String,
@@ -52,27 +77,18 @@ const paymentSchema = new mongoose.Schema({
     default: "partial"
   },
 
-  modeOfPayment: String,
-  dateOfPayment: String,
-  transactionId: String,
-
-  paymentScreenshot: String,
-
-  // ALL PAYMENTS
-  transactions: [transactionSchema],
-
-  // TIMESTAMP
   createdAt: { type: Date, default: Date.now }
 });
 
-// Recalculate
+// RECALCULATE PAYMENT STATUS
 paymentSchema.methods.recalculate = function () {
-  this.paidAmount = this.transactions.reduce(
+  const totalPaid = this.transactions.reduce(
     (sum, t) => sum + (t.amount || 0),
     0
   );
 
-  this.balance = this.totalAmount - this.paidAmount;
+  this.amountPaid = totalPaid;
+  this.balance = this.totalAmount - totalPaid;
   this.status = this.balance <= 0 ? "paid" : "partial";
 };
 
