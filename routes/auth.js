@@ -6,12 +6,12 @@ const User = require('../models/User');
 
 const router = express.Router();
 
-// register
+// REGISTER USER
 router.post('/register', [
   body('name').notEmpty(),
   body('email').isEmail(),
   body('password').isLength({ min: 6 }),
-  body('role').optional().isIn(['admin','cashier','worker'])
+  body('role').optional().isIn(['admin','cashier','registrar','worker'])   // <<< registrar added
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
@@ -34,13 +34,14 @@ router.post('/register', [
       user: { id: user._id, name: user.name, email: user.email, role: user.role },
       token
     });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// login
+// LOGIN USER
 router.post('/login', [
   body('email').isEmail(),
   body('password').exists()
@@ -63,6 +64,7 @@ router.post('/login', [
       user: { id: user._id, name: user.name, email: user.email, role: user.role },
       token
     });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error' });

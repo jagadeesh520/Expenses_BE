@@ -193,6 +193,36 @@ router.get("/list", async (req, res) => {
   }
 });
 
+//Register Details 
+
+// ➤ Fetch all registered customers
+router.get("/registrations", async (req, res) => {
+  try {
+    const list = await Payment.find().sort({ createdAt: -1 });
+    res.json({ success: true, data: list });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ➤ Approve or Decline a registration
+// ➤ Approve or Decline a registration
+router.put("/registrations/status/:id", async (req, res) => {
+  try {
+    const { status } = req.body; // approved | declined
+    const updated = await Payment.findByIdAndUpdate(
+      req.params.id,
+      { registrationStatus: status },   // <-- FIXED HERE
+      { new: true }
+    );
+    res.json({ success: true, message: `User ${status}`, data: updated });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
 // GET SINGLE CUSTOMER DETAILS
 router.get("/customer/:id", async (req, res) => {
   try {

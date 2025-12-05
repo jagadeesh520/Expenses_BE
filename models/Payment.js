@@ -69,18 +69,28 @@ const paymentSchema = new mongoose.Schema({
   transactions: [transactionSchema],
 
   // AUTO-CALCULATED FIELDS
-  totalAmount: { type: Number, default: 0 },
+  totalAmount: { type: Number, default: 0 },   // total fee to be paid
   balance: { type: Number, default: 0 },
+
+  // PAYMENT STATUS (Based on balance)
   status: {
     type: String,
     enum: ["paid", "partial"],
     default: "partial"
   },
 
+  // REGISTRATION APPROVAL STATUS (for Admin Approval)
+  registrationStatus: {
+    type: String,
+    enum: ["pending", "approved", "declined"],
+    default: "pending"
+  },
+
   createdAt: { type: Date, default: Date.now }
 });
 
-// RECALCULATE PAYMENT STATUS
+
+// ================= AUTO RECALCULATE PAYMENT =================
 paymentSchema.methods.recalculate = function () {
   const totalPaid = this.transactions.reduce(
     (sum, t) => sum + (t.amount || 0),
@@ -89,7 +99,7 @@ paymentSchema.methods.recalculate = function () {
 
   this.amountPaid = totalPaid;
   this.balance = this.totalAmount - totalPaid;
-  this.status = this.balance <= 0 ? "paid" : "partial";
+  this.status = this.balance <= 0 ? "paid" : "partial"; // auto update payment status
 };
 
 module.exports = mongoose.model("Payment", paymentSchema);
