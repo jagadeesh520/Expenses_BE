@@ -82,9 +82,21 @@ const paymentSchema = new mongoose.Schema({
   // REGISTRATION APPROVAL STATUS (for Admin Approval)
   registrationStatus: {
     type: String,
-    enum: ["pending", "approved", "declined"],
+    enum: ["pending", "approved", "rejected"],
     default: "pending"
   },
+
+  // UNIQUE REGISTRATION ID
+  uniqueId: String,
+
+  // APPROVAL DETAILS
+  approvedAt: Date,
+  approvedBy: String,
+
+  // REJECTION DETAILS
+  rejectedAt: Date,
+  rejectedBy: String,
+  rejectionReason: String,
 
   createdAt: { type: Date, default: Date.now }
 });

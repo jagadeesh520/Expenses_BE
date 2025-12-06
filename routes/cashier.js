@@ -3,11 +3,247 @@ const multer = require("multer");
 const xlsx = require("xlsx");
 const fs = require("fs");
 const path = require("path");
+const nodemailer = require("nodemailer");
 
 const Payment = require("../models/Payment");
 const WorkerRequest = require("../models/workerRequest");
 
 const router = express.Router();
+
+// ==== Email Configuration ====
+// Configure nodemailer transporters for each region
+// You'll need to set these environment variables in your .env file:
+// EMAIL_HOST, EMAIL_PORT (optional, defaults to Gmail)
+// WEST_EMAIL_PASS - App password for spicon.apwr@gmail.com
+// EAST_EMAIL_PASS - App password for Spicom.aper@gmail.com
+
+// West Rayalaseema email transporter
+const westTransporter = nodemailer.createTransport({
+    host: process.env.EMAIL_HOST || "smtp.gmail.com",
+    port: process.env.EMAIL_PORT || 587,
+    secure: false, // true for 465, false for other ports
+    auth: {
+        user: "spicon.apwr@gmail.com",
+        pass: process.env.WEST_EMAIL_PASS, // App password for West email
+    },
+});
+
+// East Rayalaseema email transporter
+const eastTransporter = nodemailer.createTransport({
+    host: process.env.EMAIL_HOST || "smtp.gmail.com",
+    port: process.env.EMAIL_PORT || 587,
+    secure: false, // true for 465, false for other ports
+    auth: {
+        user: "spicon.aper@gmail.com",
+        pass: process.env.EAST_EMAIL_PASS, // App password for East email
+    },
+});
+
+// Function to get transporter and sender email based on region
+function getEmailConfig(region) {
+    if (region === "West Rayalaseema") {
+        return {
+            transporter: westTransporter,
+            senderEmail: "spicon.apwr@gmail.com"
+        };
+    } else if (region === "East Rayalaseema") {
+        return {
+            transporter: eastTransporter,
+            senderEmail: "spicon.aper@gmail.com"
+        };
+    }
+    // Fallback to West if region doesn't match
+    return {
+        transporter: westTransporter,
+        senderEmail: "spicon.apwr@gmail.com"
+    };
+}
+
+// Function to send registration confirmation email
+async function sendRegistrationEmail(email, fullName, region) {
+    try {
+        // Format participant name - use fullName if available, otherwise use "Participant"
+        const participantName = fullName || "Participant";
+        
+        // Get the appropriate transporter and sender email based on region
+        const { transporter: emailTransporter, senderEmail } = getEmailConfig(region);
+        
+        const mailOptions = {
+            from: senderEmail,
+            to: email,
+            subject: "Thank You for Registering for SPICON-2026",
+            html: `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; line-height: 1.6; color: #333;">
+                    <p>Dear ${participantName},</p>
+                    
+                    <p>Greetings in Christ's name!</p>
+                    
+                    <p>Thank you for your interest in SPICON-2026, the Spiritual Life Conference organized by UESI-AP ${region}. We have received your application and it is currently under review. Once the verification process is complete, you will receive a confirmation email with further details.</p>
+                    
+                    <p>We appreciate your prayerful anticipation and look forward to joining together in a time of consecration, imitation, and spiritual renewal rooted in 1 Peter 2:21–22. May the Lord prepare our hearts for a transformative experience.</p>
+                    
+                    <p>If you have any questions in the meantime, please reply to this email.</p>
+                    
+                    <p>With blessings,</p>
+                    
+                    <p><strong>SPICON-2026 Committee</strong><br/>
+                    UESI-AP ${region}</p>
+                </div>
+            `,
+        };
+        await emailTransporter.sendMail(mailOptions);
+        console.log(`Registration confirmation email sent to ${email} from ${senderEmail}`);
+    } catch (error) {
+        console.error("Error sending email:", error);
+        // Don't throw error - registration should still succeed even if email fails
+    }
+}
+
+// Map group type to ID prefix
+function getPrefixForGroupType(groupType = "") {
+    const normalized = (groupType || "").toLowerCase();
+    if (normalized.includes("family")) return "F";               // Family
+    if (normalized.includes("graduate")) return "G";             // Any graduate option
+    if (normalized.includes("student")) return "S";              // Students
+    if (normalized.includes("volunteer")) return "V";            // Volunteers
+    // Fallback
+    return "G";
+}
+
+// Function to generate unique registration ID with group-based prefixes
+// Formats:
+//  Family -> SPICON2026-F001
+//  Graduates (employed/unemployed/children) -> SPICON2026-G001
+//  Students -> SPICON2026-S001
+//  Volunteers -> SPICON2026-V001
+async function generateRegistrationId(region, groupType) {
+    const prefix = getPrefixForGroupType(groupType);
+    const regex = new RegExp(`^SPICON2026-${prefix}(\\d+)$`);
+
+    const lastRegistration = await Payment.findOne({
+        region,
+        uniqueId: { $regex: regex },
+        registrationStatus: "approved"
+    }).sort({ uniqueId: -1 });
+
+    let nextSequence = 1;
+    if (lastRegistration?.uniqueId) {
+        const match = lastRegistration.uniqueId.match(regex);
+        if (match?.[1]) {
+            const lastSequence = parseInt(match[1], 10);
+            if (!isNaN(lastSequence)) {
+                nextSequence = lastSequence + 1;
+            }
+        }
+    }
+
+    const paddedSequence = String(nextSequence).padStart(3, "0");
+    return `SPICON2026-${prefix}${paddedSequence}`;
+}
+
+// Function to send approval confirmation email
+async function sendApprovalEmail(email, fullName, region, uniqueId) {
+    try {
+        const participantName = fullName || "Participant";
+        
+        // Get the appropriate transporter and sender email based on region
+        const { transporter: emailTransporter, senderEmail } = getEmailConfig(region);
+        
+        // Determine venue, dates, and speakers based on region
+        let venue = "";
+        let dates = "";
+        let speakers = "";
+        
+        if (region === "West Rayalaseema") {
+            venue = "Seventh-Day Adventist High School,\nDugganagaripalli, Vempalli, YSR Kadapa District";
+            dates = "11th to 14th January 2026";
+            speakers = "Bro. P. C. Joshua (Devotions), Bro. P. Prem Kumar (Expositions), and Bro. T. R. Ravi Rajendra (Keynote Address)";
+        } else if (region === "East Rayalaseema") {
+            venue = "Wisdom CBSE High school,\nkoduru,\nAnnamayya District";
+            dates = "10th 5pm to 13th 1:00pm January 2026";
+            speakers = "Bro. U.David Jaya Kumar (Devotions), Bro. J.Godwin Nickelson (Expositions), and Bro. T.R.Ravi Rajendra (Keynote Address)";
+        }
+        
+        const mailOptions = {
+            from: senderEmail,
+            to: email,
+            subject: "SPICON-2026 Registration Confirmation & Invitation",
+            html: `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; line-height: 1.6; color: #333;">
+                    <p>Dear ${participantName},</p>
+                    
+                    <p>Greetings in the precious name of our Lord Jesus Christ!</p>
+                    
+                    <p>We are pleased to confirm your registration for SPICON-2026, the Spiritual Life Conference organized by UESI–AP ${region}. Your registration number is <strong>${uniqueId}</strong> — please keep it safe for future reference.</p>
+                    
+                    <p><strong>📅 Conference Dates:</strong></p>
+                    <p>${dates}</p>
+                    
+                    <p><strong>📍 Venue:</strong></p>
+                    <p>${venue}</p>
+                    
+                    <p><strong>🕊 Theme:</strong></p>
+                    <p>"Consecrate… Imitate… Motivate…"</p>
+                    <p>Based on 1 Peter 2:21–22</p>
+                    
+                    <p>We warmly invite you to join us for these blessed days of spiritual renewal, fellowship, and growth. The Lord has prepared His servants — ${speakers} — who will minister to us throughout the conference.</p>
+                    
+                    <p>We request you to arrive at the venue by the afternoon of January ${region === "West Rayalaseema" ? "11th" : "10th"} for registration and orientation. Additional details and instructions will be shared with you soon.</p>
+                    
+                    <p>Thank you for your prayerful participation. We look forward to welcoming you to SPICON-2026!</p>
+                    
+                    <p>In His service,</p>
+                    
+                    <p><strong>SPICON-2026 Committee</strong><br/>
+                    UESI–AP ${region}</p>
+                </div>
+            `,
+        };
+        await emailTransporter.sendMail(mailOptions);
+        console.log(`Approval confirmation email sent to ${email} with ID ${uniqueId}`);
+    } catch (error) {
+        console.error("Error sending approval email:", error);
+        throw error; // Re-throw so we know if email failed
+    }
+}
+
+// Function to send rejection email
+async function sendRejectionEmail(email, fullName, region, reason) {
+    if (!email) return; // nothing to send
+    try {
+        const participantName = fullName || "Participant";
+        const { transporter: emailTransporter, senderEmail } = getEmailConfig(region);
+
+        const mailOptions = {
+            from: senderEmail,
+            to: email,
+            subject: "SPICON-2026 Registration Update",
+            html: `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; line-height: 1.6; color: #333;">
+                    <p>Dear ${participantName},</p>
+
+                    <p>Greetings in Christ's name!</p>
+
+                    <p>We regret to inform you that your registration for SPICON-2026 (${region}) could not be approved.</p>
+
+                    ${reason ? `<p><strong>Reason:</strong> ${reason}</p>` : ""}
+
+                    <p>If you believe this is in error or need further clarification, please reply to this email.</p>
+
+                    <p>With blessings,</p>
+                    <p><strong>SPICON-2026 Committee</strong><br/>
+                    UESI–AP ${region}</p>
+                </div>
+            `,
+        };
+
+        await emailTransporter.sendMail(mailOptions);
+        console.log(`Rejection email sent to ${email}`);
+    } catch (error) {
+        console.error("Error sending rejection email:", error);
+        // Do not throw; rejection action should still succeed
+    }
+}
 
 // ==== Multer Storage ====
 const storage = multer.diskStorage({
@@ -89,17 +325,24 @@ router.post("/upload", upload.single("file"), async (req, res) => {
 
 
 // ============================================================
-// 2) REGISTER CUSTOMER FROM SPICON FRONTEND FORM
+// 2) REGISTER CUSTOMER FROM SPICON FRONTEND FORM (UPDATED)
 // ============================================================
 router.post(
   "/registerCustomer",
   upload.single("paymentScreenshot"),
   async (req, res) => {
     try {
+      const { region, groupType } = req.body;
+      
+      // Ensure mandatory fields are present
+      if (!region || !groupType) {
+        return res.status(400).json({ error: "Region and Group Type are mandatory for registration." });
+      }
+      
+      // --- 1. CREATE PAYMENT OBJECT ---
       const customer = new Payment({
-
         // REGION
-        region: req.body.region,
+        region: region,
 
         // BASIC DETAILS
         email: req.body.email,
@@ -126,7 +369,7 @@ router.post(
         recommenderContact: req.body.recommenderContact,
 
         // GROUP TYPE
-        groupType: req.body.groupType,
+        groupType: groupType,
 
         // FAMILY DETAILS
         spouseAttending: req.body.spouseAttending,
@@ -171,13 +414,58 @@ router.post(
       customer.recalculate();
       await customer.save();
 
-      res.json({ success: true, data: customer });
+      // --- 2. SEND CONFIRMATION EMAIL ---
+      // Send email to the registered user
+      if (req.body.email) {
+        await sendRegistrationEmail(
+          req.body.email,
+          req.body.fullName || customer.name,
+          region
+        );
+      }
+
+      // --- 3. RETURN SUCCESS RESPONSE (without uniqueId) ---
+      res.json({ 
+        success: true, 
+        message: "Registration successful. Confirmation email has been sent."
+      });
     } catch (err) {
       console.error("REGISTER ERROR:", err);
       res.status(500).json({ error: err.message });
     }
   }
 );
+
+//--------------------------------------------------
+// DELETE CUSTOMER / REGISTRATION
+//--------------------------------------------------
+router.delete("/registrations/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    const record = await Payment.findById(id);
+    if (!record) {
+      return res.status(404).json({ success: false, error: "Customer not found" });
+    }
+
+    // If screenshot exists you can also delete from uploads folder (Optional)
+    /*
+    if (record.paymentScreenshot) {
+      const fs = require("fs");
+      const filePath = `uploads/${record.paymentScreenshot}`;
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    }
+    */
+
+    await Payment.findByIdAndDelete(id);
+
+    return res.json({ success: true, message: "Registration deleted successfully" });
+  } catch (err) {
+    console.error("DELETE ERROR:", err);
+    res.status(500).json({ success: false, error: "Server error while deleting" });
+  }
+});
+
 
 
 
@@ -193,30 +481,160 @@ router.get("/list", async (req, res) => {
   }
 });
 
-//Register Details 
+// ============================================================
+// REGISTRAR ENDPOINTS - Registration Approval/Rejection
+// ============================================================
 
-// ➤ Fetch all registered customers
+// Get all registrations (for registrar dashboard)
 router.get("/registrations", async (req, res) => {
   try {
-    const list = await Payment.find().sort({ createdAt: -1 });
-    res.json({ success: true, data: list });
+    const { status, region } = req.query; // Optional filters: status (pending/approved/rejected), region
+    
+    const query = {};
+    if (status) {
+      query.registrationStatus = status;
+    }
+    if (region) {
+      query.region = region;
+    }
+    
+    const registrations = await Payment.find(query)
+      .sort({ createdAt: -1 }) // Newest first
+      .select("-transactions"); // Exclude transactions array for cleaner response
+    
+    res.json({ 
+      success: true, 
+      data: registrations,
+      count: registrations.length
+    });
   } catch (err) {
+    console.error("Error fetching registrations:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ➤ Approve or Decline a registration
-// ➤ Approve or Decline a registration
-router.put("/registrations/status/:id", async (req, res) => {
+// Get single registration details
+router.get("/registrations/:id", async (req, res) => {
   try {
-    const { status } = req.body; // approved | declined
-    const updated = await Payment.findByIdAndUpdate(
-      req.params.id,
-      { registrationStatus: status },   // <-- FIXED HERE
-      { new: true }
-    );
-    res.json({ success: true, message: `User ${status}`, data: updated });
+    const registration = await Payment.findById(req.params.id);
+    
+    if (!registration) {
+      return res.status(404).json({ error: "Registration not found" });
+    }
+    
+    res.json({ success: true, data: registration });
   } catch (err) {
+    console.error("Error fetching registration:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Approve registration - generates unique ID and sends confirmation email
+router.post("/registrations/:id/approve", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { approvedBy } = req.body; // Registrar email or ID
+    
+    const registration = await Payment.findById(id);
+    
+    if (!registration) {
+      return res.status(404).json({ error: "Registration not found" });
+    }
+    
+    if (registration.registrationStatus === "approved") {
+      return res.status(400).json({ error: "Registration is already approved" });
+    }
+    
+    // Generate unique registration ID based on groupType
+    const uniqueId = await generateRegistrationId(registration.region, registration.groupType);
+    
+    // Update registration status
+    registration.registrationStatus = "approved";
+    registration.uniqueId = uniqueId;
+    registration.approvedAt = new Date();
+    registration.approvedBy = approvedBy || "Registrar";
+    
+    await registration.save();
+    
+    // Send approval email
+    try {
+      await sendApprovalEmail(
+        registration.email,
+        registration.fullName || registration.name,
+        registration.region,
+        uniqueId
+      );
+    } catch (emailError) {
+      console.error("Failed to send approval email:", emailError);
+      // Still return success but log the error
+      // You might want to handle this differently based on your requirements
+    }
+    
+    res.json({ 
+      success: true, 
+      message: "Registration approved successfully",
+      data: {
+        id: registration._id,
+        uniqueId: uniqueId,
+        registrationStatus: registration.registrationStatus
+      }
+    });
+  } catch (err) {
+    console.error("Error approving registration:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Reject registration
+router.post("/registrations/:id/reject", async (req, res) => {
+  try {
+    const { id } = req.params;
+        const { rejectedBy, reason } = req.body; // Optional rejection reason
+    
+    const registration = await Payment.findById(id);
+    
+    if (!registration) {
+      return res.status(404).json({ error: "Registration not found" });
+    }
+    
+    if (registration.registrationStatus === "rejected") {
+      return res.status(400).json({ error: "Registration is already rejected" });
+    }
+    
+    // Update registration status
+    registration.registrationStatus = "rejected";
+    registration.rejectedAt = new Date();
+    registration.rejectedBy = rejectedBy || "Registrar";
+    
+    // Optionally store rejection reason
+    if (reason) {
+      registration.rejectionReason = reason;
+    }
+    
+    await registration.save();
+
+        // Send rejection email
+        try {
+            await sendRejectionEmail(
+                registration.email,
+                registration.fullName || registration.name,
+                registration.region,
+                reason
+            );
+        } catch (emailError) {
+            console.error("Failed to send rejection email:", emailError);
+        }
+    
+    res.json({ 
+      success: true, 
+      message: "Registration rejected successfully",
+      data: {
+        id: registration._id,
+        registrationStatus: registration.registrationStatus
+      }
+    });
+  } catch (err) {
+    console.error("Error rejecting registration:", err);
     res.status(500).json({ error: err.message });
   }
 });

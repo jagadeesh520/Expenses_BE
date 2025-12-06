@@ -1,4 +1,4 @@
-require("dotenv").config();
+require("dotenv").config({ path: "../.env" });
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const User = require("../models/User");
@@ -17,6 +17,12 @@ async function insertUsers() {
         role: "admin",
       },
       {
+        name: "Registrar User",
+        email: "registrar@system.com",
+        password: "Registrar@123",
+        role: "registrar",
+      },
+      {
         name: "Cashier User",
         email: "cashier@system.com",
         password: "Cashier@123",
@@ -27,7 +33,7 @@ async function insertUsers() {
         email: "worker@system.com",
         password: "Worker@123",
         role: "worker",
-      },
+      }
     ];
 
     for (let user of users) {
