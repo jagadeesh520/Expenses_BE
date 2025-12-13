@@ -443,19 +443,19 @@ router.get("/registrations/:id/screenshot", async (req, res) => {
   try {
     const registration = await Payment.findById(req.params.id);
 
+    console.log("DB paymentScreenshot:", registration?.paymentScreenshot);
+
     if (!registration || !registration.paymentScreenshot) {
       return res.status(404).json({ message: "Screenshot not found" });
     }
 
-    // uploads folder is at project root
     const filePath = path.resolve(
       __dirname,
       "../uploads",
       registration.paymentScreenshot
     );
 
-    // Debug log (optional)
-    console.log("Serving screenshot:", filePath);
+    console.log("Resolved filePath:", filePath);
 
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ message: "File missing on server" });
@@ -463,10 +463,11 @@ router.get("/registrations/:id/screenshot", async (req, res) => {
 
     res.sendFile(filePath);
   } catch (err) {
-    console.error("Screenshot error:", err);
+    console.error(err);
     res.status(500).json({ message: "Server error" });
   }
 });
+
 
 
 //--------------------------------------------------
