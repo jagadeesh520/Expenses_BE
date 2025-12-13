@@ -253,8 +253,13 @@ const storage = multer.diskStorage({
     cb(null, dir);
   },
   filename: function (req, file, cb) {
-    cb(null, Date.now() + "-" + file.originalname);
-  }
+  const cleanName = file.originalname
+    .toLowerCase()              // jpg / png always lowercase
+    .replace(/\s+/g, "_")       // spaces → _
+    .replace(/[^a-z0-9._-]/g, ""); // remove special chars
+
+  cb(null, Date.now() + "-" + cleanName);
+}
 });
 
 const upload = multer({ storage });
@@ -437,36 +442,51 @@ router.post(
 );
 
 // ============================================================
-// VIEW PAYMENT SCREENSHOT (SECURE)
+// VIEW PAYMENT SCREENSHOT (CASE & EXTENSION SAFE)
 // ============================================================
 router.get("/registrations/:id/screenshot", async (req, res) => {
   try {
     const registration = await Payment.findById(req.params.id);
 
-    console.log("DB paymentScreenshot:", registration?.paymentScreenshot);
-
     if (!registration || !registration.paymentScreenshot) {
       return res.status(404).json({ message: "Screenshot not found" });
     }
 
-    const filePath = path.resolve(
-      __dirname,
-      "../uploads",
-      registration.paymentScreenshot
+    const uploadsDir = path.resolve(__dirname, "../uploads");
+
+    // Normalize filename from DB
+    const dbFile = registration.paymentScreenshot.toLowerCase();
+
+    // Find matching file ignoring case
+    const files = fs.readdirSync(uploadsDir);
+    const matchedFile = files.find(
+      (f) => f.toLowerCase() === dbFile
     );
 
-    console.log("Resolved filePath:", filePath);
-
-    if (!fs.existsSync(filePath)) {
+    if (!matchedFile) {
       return res.status(404).json({ message: "File missing on server" });
     }
 
-    res.sendFile(filePath);
+    // Auto-set correct content type
+    const ext = path.extname(matchedFile).toLowerCase();
+    const mimeTypes = {
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".png": "image/png",
+    };
+
+    res.setHeader(
+      "Content-Type",
+      mimeTypes[ext] || "application/octet-stream"
+    );
+
+    res.sendFile(path.join(uploadsDir, matchedFile));
   } catch (err) {
-    console.error(err);
+    console.error("Screenshot view error:", err);
     res.status(500).json({ message: "Server error" });
   }
 });
+
 
 
 
