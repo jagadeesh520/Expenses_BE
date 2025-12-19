@@ -41,27 +41,67 @@ router.post('/register', [
   }
 });
 
-// LOGIN USER
+// LOGIN USER (supports both username and email)
 router.post('/login', [
-  body('email').isEmail(),
+  body('username').notEmpty(),
   body('password').exists()
 ], async (req,res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-  const { email, password } = req.body;
+  const { username, password, role, region } = req.body;
 
   try {
-    const user = await User.findOne({ email });
-    if (!user) return res.status(401).json({ message: 'Invalid credentials' });
+    // Build query to find user
+    let query = {
+      $or: [
+        { username: username },
+        { email: username }
+      ]
+    };
 
-    const isMatch = await bcrypt.compare(password, user.passwordHash);
-    if (!isMatch) return res.status(401).json({ message: 'Invalid credentials' });
+    // If role is provided, filter by role
+    if (role) {
+      query.role = role;
+    }
 
-    const token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN });
+    // If region is provided, filter by region
+    if (region) {
+      query.region = region;
+    }
+
+    // Try to find user(s) matching the criteria
+    let users = await User.find(query);
+    
+    if (users.length === 0) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    // If multiple users found, try to find one with matching password
+    let user = null;
+    for (let u of users) {
+      const isMatch = await bcrypt.compare(password, u.passwordHash);
+      if (isMatch) {
+        user = u;
+        break;
+      }
+    }
+
+    if (!user) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    const token = jwt.sign({ id: user._id, role: user.role, region: user.region }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN });
 
     res.json({
-      user: { id: user._id, name: user.name, email: user.email, role: user.role },
+      user: { 
+        id: user._id, 
+        name: user.name, 
+        email: user.email, 
+        username: user.username,
+        role: user.role,
+        region: user.region
+      },
       token
     });
 

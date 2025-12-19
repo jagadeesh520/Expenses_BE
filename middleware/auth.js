@@ -17,11 +17,31 @@ function authenticate(req, res, next) {
   }
 }
 
+// Role mapping: new roles map to old role permissions
+const roleMapping = {
+  'chairperson': 'admin',
+  'treasurer': 'cashier',
+  'coordinator': 'worker',
+  'lac_convener': 'worker',
+  'regional_coordinator': 'admin',
+  'registrar': 'admin',
+  // Keep old roles for backward compatibility
+  'admin': 'admin',
+  'cashier': 'cashier',
+  'worker': 'worker',
+};
+
 function authorize(roles = []) {
   return (req, res, next) => {
     if (!req.user) return res.status(401).json({ message: 'Not authenticated' });
 
-    if (!roles.includes(req.user.role)) {
+    const userRole = req.user.role;
+    const mappedRole = roleMapping[userRole] || userRole;
+    
+    // Check if user's role (or mapped role) is in allowed roles
+    const hasAccess = roles.includes(userRole) || roles.includes(mappedRole);
+    
+    if (!hasAccess) {
       return res.status(403).json({ message: 'Forbidden' });
     }
 
