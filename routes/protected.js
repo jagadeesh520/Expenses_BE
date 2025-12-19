@@ -9,18 +9,18 @@ router.get('/me', authenticate, async (req, res) => {
   res.json({ id: req.user.id, role: req.user.role });
 });
 
-// admin-only route
-router.get('/admin/dashboard', authenticate, authorize(['admin']), (req, res) => {
+// admin/chairperson/registrar/regional_coordinator-only route
+router.get('/admin/dashboard', authenticate, authorize(['admin', 'chairperson', 'registrar', 'regional_coordinator']), (req, res) => {
   res.json({ msg: 'Welcome admin dashboard' });
 });
 
-// cashier-only route
-router.get('/cashier/dashboard', authenticate, authorize(['cashier']), (req, res) => {
+// cashier/treasurer-only route
+router.get('/cashier/dashboard', authenticate, authorize(['cashier', 'treasurer']), (req, res) => {
   res.json({ msg: 'Welcome cashier dashboard' });
 });
 
-// worker-only route
-router.get('/worker/dashboard', authenticate, authorize(['worker']), (req, res) => {
+// worker/coordinator/lac_convener-only route
+router.get('/worker/dashboard', authenticate, authorize(['worker', 'coordinator', 'lac_convener']), (req, res) => {
   res.json({ msg: 'Welcome worker dashboard' });
 });
 

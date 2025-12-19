@@ -7,6 +7,8 @@ const nodemailer = require("nodemailer");
 
 const Payment = require("../models/Payment");
 const WorkerRequest = require("../models/workerRequest");
+const PaymentRequest = require("../models/PaymentRequest");
+const User = require("../models/User");
 
 const router = express.Router();
 
@@ -245,21 +247,28 @@ async function sendRejectionEmail(email, fullName, region, reason) {
     }
 }
 
+
 // ==== Multer Storage ====
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     const dir = path.join(__dirname, "../uploads");
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+      console.log("📁 Created uploads directory:", dir);
+    }
+    console.log("💾 Saving file to:", dir);
     cb(null, dir);
   },
   filename: function (req, file, cb) {
-  const cleanName = file.originalname
-    .toLowerCase()              // jpg / png always lowercase
-    .replace(/\s+/g, "_")       // spaces → _
-    .replace(/[^a-z0-9._-]/g, ""); // remove special chars
+    const cleanName = file.originalname
+      .toLowerCase()              // jpg / png always lowercase
+      .replace(/\s+/g, "_")       // spaces → _
+      .replace(/[^a-z0-9._-]/g, ""); // remove special chars
 
-  cb(null, Date.now() + "-" + cleanName);
-}
+    const filename = Date.now() + "-" + cleanName;
+    console.log("📝 File will be saved as:", filename);
+    cb(null, filename);
+  }
 });
 
 const upload = multer({ storage });
@@ -802,8 +811,300 @@ router.post("/pay/:id", upload.any(), async (req, res) => {
   }
 });
 
+// ============================================================
+// PAYMENT REQUEST ENDPOINTS - Coordinator/LAC Convener Payment Requests
+// ============================================================
 
+// 1. Coordinator/LAC Convener creates payment request
+router.post(
+  "/payment-request",
+  upload.array("requestImages", 5),
+  async (req, res) => {
+    try {
+      const { requestedBy, title, description, requestedAmount, region, requesterRole } = req.body;
 
+      // Validate required fields
+      if (!requestedBy || !title || !description || !requestedAmount || !region || !requesterRole) {
+        return res.status(400).json({ error: "All fields are required" });
+      }
 
+      // Validate requester role
+      if (!['coordinator', 'lac_convener'].includes(requesterRole)) {
+        return res.status(400).json({ error: "Invalid requester role" });
+      }
+
+      // Get requester details
+      const requester = await User.findById(requestedBy);
+      if (!requester) {
+        return res.status(404).json({ error: "Requester not found" });
+      }
+
+      const paymentRequest = new PaymentRequest({
+        requestedBy: requestedBy,
+        requestedByName: requester.name,
+        requesterRole: requesterRole,
+        region: region,
+        title: title,
+        description: description,
+        requestedAmount: Number(requestedAmount),
+        requestImages: req.files ? req.files.map(f => f.filename) : [],
+        status: "pending"
+      });
+
+      await paymentRequest.save();
+
+      res.json({
+        success: true,
+        message: "Payment request submitted successfully",
+        data: paymentRequest
+      });
+    } catch (err) {
+      console.error("Error creating payment request:", err);
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// 2. Get all payment requests (with filters)
+router.get("/payment-requests", async (req, res) => {
+  try {
+    const { status, region, requesterRole, requestedBy } = req.query;
+
+    const query = {};
+    if (status) query.status = status;
+    if (region) query.region = region;
+    if (requesterRole) query.requesterRole = requesterRole;
+    if (requestedBy) query.requestedBy = requestedBy;
+
+    const paymentRequests = await PaymentRequest.find(query)
+      .sort({ createdAt: -1 })
+      .populate('requestedBy', 'name email')
+      .populate('approvedBy', 'name email')
+      .populate('paidBy', 'name email');
+
+    res.json({
+      success: true,
+      data: paymentRequests,
+      count: paymentRequests.length
+    });
+  } catch (err) {
+    console.error("Error fetching payment requests:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. Get single payment request
+router.get("/payment-requests/:id", async (req, res) => {
+  try {
+    const paymentRequest = await PaymentRequest.findById(req.params.id)
+      .populate('requestedBy', 'name email role')
+      .populate('approvedBy', 'name email')
+      .populate('paidBy', 'name email');
+
+    if (!paymentRequest) {
+      return res.status(404).json({ error: "Payment request not found" });
+    }
+
+    res.json({ success: true, data: paymentRequest });
+  } catch (err) {
+    console.error("Error fetching payment request:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. Registrar approves payment request
+router.post("/payment-requests/:id/approve", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { approvedBy } = req.body;
+
+    if (!approvedBy) {
+      return res.status(400).json({ error: "Approver ID is required" });
+    }
+
+    const paymentRequest = await PaymentRequest.findById(id);
+    if (!paymentRequest) {
+      return res.status(404).json({ error: "Payment request not found" });
+    }
+
+    if (paymentRequest.status !== "pending") {
+      return res.status(400).json({ 
+        error: `Payment request is already ${paymentRequest.status}` 
+      });
+    }
+
+    // Get approver details
+    const approver = await User.findById(approvedBy);
+    if (!approver) {
+      return res.status(404).json({ error: "Approver not found" });
+    }
+
+    if (approver.role !== "registrar") {
+      return res.status(403).json({ error: "Only registrar can approve payment requests" });
+    }
+
+    paymentRequest.status = "approved";
+    paymentRequest.approvedBy = approvedBy;
+    paymentRequest.approvedByName = approver.name;
+    paymentRequest.approvedAt = new Date();
+
+    await paymentRequest.save();
+
+    res.json({
+      success: true,
+      message: "Payment request approved successfully",
+      data: paymentRequest
+    });
+  } catch (err) {
+    console.error("Error approving payment request:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 5. Registrar rejects payment request
+router.post("/payment-requests/:id/reject", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { approvedBy, rejectionReason } = req.body;
+
+    if (!approvedBy) {
+      return res.status(400).json({ error: "Approver ID is required" });
+    }
+
+    const paymentRequest = await PaymentRequest.findById(id);
+    if (!paymentRequest) {
+      return res.status(404).json({ error: "Payment request not found" });
+    }
+
+    if (paymentRequest.status !== "pending") {
+      return res.status(400).json({ 
+        error: `Payment request is already ${paymentRequest.status}` 
+      });
+    }
+
+    // Get approver details
+    const approver = await User.findById(approvedBy);
+    if (!approver) {
+      return res.status(404).json({ error: "Approver not found" });
+    }
+
+    if (approver.role !== "registrar") {
+      return res.status(403).json({ error: "Only registrar can reject payment requests" });
+    }
+
+    paymentRequest.status = "rejected";
+    paymentRequest.approvedBy = approvedBy;
+    paymentRequest.approvedByName = approver.name;
+    paymentRequest.rejectionReason = rejectionReason || "";
+    paymentRequest.rejectedAt = new Date();
+
+    await paymentRequest.save();
+
+    res.json({
+      success: true,
+      message: "Payment request rejected",
+      data: paymentRequest
+    });
+  } catch (err) {
+    console.error("Error rejecting payment request:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 6. Cashier uploads payment proof (for approved requests)
+router.post(
+  "/payment-requests/:id/pay",
+  upload.array("paymentProofImages", 5),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { paidBy, paidAmount, paymentNote } = req.body;
+
+      if (!paidBy || !paidAmount) {
+        return res.status(400).json({ 
+          error: "Paid by and paid amount are required" 
+        });
+      }
+
+      const paymentRequest = await PaymentRequest.findById(id);
+      if (!paymentRequest) {
+        return res.status(404).json({ error: "Payment request not found" });
+      }
+
+      if (paymentRequest.status !== "approved") {
+        return res.status(400).json({ 
+          error: `Payment request must be approved before payment. Current status: ${paymentRequest.status}` 
+        });
+      }
+
+      // Get cashier details
+      const cashier = await User.findById(paidBy);
+      if (!cashier) {
+        return res.status(404).json({ error: "Cashier not found" });
+      }
+
+      paymentRequest.status = "paid";
+      paymentRequest.paidAmount = Number(paidAmount);
+      paymentRequest.paymentProofImages = req.files ? req.files.map(f => f.filename) : [];
+      paymentRequest.paidBy = paidBy;
+      paymentRequest.paidByName = cashier.name;
+      paymentRequest.paidAt = new Date();
+      paymentRequest.paymentNote = paymentNote || "";
+
+      await paymentRequest.save();
+
+      res.json({
+        success: true,
+        message: "Payment proof uploaded successfully",
+        data: paymentRequest
+      });
+    } catch (err) {
+      console.error("Error uploading payment proof:", err);
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// 7. Get payment requests for specific role (filtered view)
+router.get("/payment-requests/role/:role", async (req, res) => {
+  try {
+    const { role } = req.params;
+    const { userId, region } = req.query;
+
+    let query = {};
+
+    if (role === "registrar") {
+      // Registrar sees all pending, approved, and rejected requests
+      query.status = { $in: ["pending", "approved", "rejected", "paid"] };
+    } else if (role === "coordinator" || role === "lac_convener") {
+      // Coordinator/LAC Convener sees their own requests
+      if (userId) {
+        query.requestedBy = userId;
+      }
+    } else if (role === "cashier" || role === "treasurer") {
+      // Cashier/Treasurer sees approved requests ready for payment
+      query.status = "approved";
+    }
+
+    if (region) {
+      query.region = region;
+    }
+
+    const paymentRequests = await PaymentRequest.find(query)
+      .sort({ createdAt: -1 })
+      .populate('requestedBy', 'name email role')
+      .populate('approvedBy', 'name email')
+      .populate('paidBy', 'name email');
+
+    res.json({
+      success: true,
+      data: paymentRequests,
+      count: paymentRequests.length
+    });
+  } catch (err) {
+    console.error("Error fetching payment requests by role:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 module.exports = router;

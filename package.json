@@ -6,7 +6,9 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "seed": "node scripts/seedAdmin.js",
-    "seed-users": "node scripts/seedUsers.js"
+    "seed-users": "node scripts/seedUsers.js",
+    "seed-all": "node scripts/seedAllUsers.js",
+    "seed-test": "node scripts/seedTestUsers.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
