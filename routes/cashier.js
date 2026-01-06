@@ -4,60 +4,58 @@ const xlsx = require("xlsx");
 const fs = require("fs");
 const path = require("path");
 const nodemailer = require("nodemailer");
+const pdfParse = require("pdf-parse");
 
 const Payment = require("../models/Payment");
 const WorkerRequest = require("../models/workerRequest");
 const PaymentRequest = require("../models/PaymentRequest");
 const User = require("../models/User");
+const FailedEmail = require("../models/FailedEmail");
 
 const router = express.Router();
 
 // ==== Email Configuration ====
-// Configure nodemailer transporters for each region
+// Single email transporter for both East and West Rayalaseema regions
+// All emails are sent from the West Rayalaseema email account (spicon.apwr@gmail.com)
 // You'll need to set these environment variables in your .env file:
 // EMAIL_HOST, EMAIL_PORT (optional, defaults to Gmail)
-// WEST_EMAIL_PASS - App password for spicon.apwr@gmail.com
-// EAST_EMAIL_PASS - App password for Spicom.aper@gmail.com
+// WEST_EMAIL_PASS - App password for spicon.apwr@gmail.com (used for both regions)
 
-// West Rayalaseema email transporter
-const westTransporter = nodemailer.createTransport({
+// Single email transporter for both regions (using West Rayalaseema credentials)
+// All emails are sent from the West Rayalaseema email account
+const emailTransporter = nodemailer.createTransport({
     host: process.env.EMAIL_HOST || "smtp.gmail.com",
     port: process.env.EMAIL_PORT || 587,
     secure: false, // true for 465, false for other ports
     auth: {
         user: "spicon.apwr@gmail.com",
-        pass: process.env.WEST_EMAIL_PASS, // App password for West email
+        pass: process.env.WEST_EMAIL_PASS, // App password for West email (used for both regions)
     },
 });
 
-// East Rayalaseema email transporter
-const eastTransporter = nodemailer.createTransport({
-    host: process.env.EMAIL_HOST || "smtp.gmail.com",
-    port: process.env.EMAIL_PORT || 587,
-    secure: false, // true for 465, false for other ports
-    auth: {
-        user: "spicon.aper@gmail.com",
-        pass: process.env.EAST_EMAIL_PASS, // App password for East email
-    },
-});
+// Verify email transporter on startup
+if (process.env.WEST_EMAIL_PASS) {
+    emailTransporter.verify(function (error, success) {
+        if (error) {
+            console.error("❌ Email transporter verification FAILED:", error.message);
+            console.error("   Please check your WEST_EMAIL_PASS environment variable.");
+            console.error("   Error code:", error.code);
+        } else {
+            console.log("✅ Email transporter verified successfully (used for both East and West regions)");
+        }
+    });
+} else {
+    console.warn("⚠️  WEST_EMAIL_PASS environment variable is not set. Email sending will fail.");
+}
 
-// Function to get transporter and sender email based on region
+// Function to get transporter and sender email (always uses West email for both regions)
+// Region is used only for email content customization, not for email account selection
 function getEmailConfig(region) {
-    if (region === "West Rayalaseema") {
-        return {
-            transporter: westTransporter,
-            senderEmail: "spicon.apwr@gmail.com"
-        };
-    } else if (region === "East Rayalaseema") {
-        return {
-            transporter: eastTransporter,
-            senderEmail: "spicon.aper@gmail.com"
-        };
-    }
-    // Fallback to West if region doesn't match
+    // Always use West Rayalaseema email account for both regions
+    // Region parameter is used only for email content customization
     return {
-        transporter: westTransporter,
-        senderEmail: "spicon.apwr@gmail.com"
+        transporter: emailTransporter,
+        senderEmail: "spicon.apwr@gmail.com" // West email used for both East and West regions
     };
 }
 
@@ -73,7 +71,7 @@ async function sendRegistrationEmail(email, fullName, region) {
         const mailOptions = {
             from: senderEmail,
             to: email,
-            subject: "Thank You for Registering for SPICON-2026",
+            subject: `Thank You for Registering for SPICON-2026 - ${region}`,
             html: `
                 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; line-height: 1.6; color: #333;">
                     <p>Dear ${participantName},</p>
@@ -93,10 +91,16 @@ async function sendRegistrationEmail(email, fullName, region) {
                 </div>
             `,
         };
+        
         await emailTransporter.sendMail(mailOptions);
+        
         console.log(`Registration confirmation email sent to ${email} from ${senderEmail}`);
     } catch (error) {
-        console.error("Error sending email:", error);
+        console.error(`❌ Error sending ${region} registration email to ${email}:`, error.message);
+        if (error.code === 'EAUTH') {
+            console.error(`   Authentication failed. Please verify the WEST_EMAIL_PASS environment variable.`);
+            console.error("   All emails (East and West) are sent from spicon.apwr@gmail.com using WEST_EMAIL_PASS.");
+        }
         // Don't throw error - registration should still succeed even if email fails
     }
 }
@@ -169,7 +173,7 @@ async function sendApprovalEmail(email, fullName, region, uniqueId) {
         const mailOptions = {
             from: senderEmail,
             to: email,
-            subject: "SPICON-2026 Registration Confirmation & Invitation",
+            subject: `SPICON-2026 Registration Confirmation & Invitation - ${region}`,
             html: `
                 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; line-height: 1.6; color: #333;">
                     <p>Dear ${participantName},</p>
@@ -201,10 +205,16 @@ async function sendApprovalEmail(email, fullName, region, uniqueId) {
                 </div>
             `,
         };
+        
         await emailTransporter.sendMail(mailOptions);
+        
         console.log(`Approval confirmation email sent to ${email} with ID ${uniqueId}`);
     } catch (error) {
-        console.error("Error sending approval email:", error);
+        console.error(`❌ Error sending ${region} approval email to ${email}:`, error.message);
+        if (error.code === 'EAUTH') {
+            console.error(`   Authentication failed. Please verify the WEST_EMAIL_PASS environment variable.`);
+            console.error("   All emails (East and West) are sent from spicon.apwr@gmail.com using WEST_EMAIL_PASS.");
+        }
         throw error; // Re-throw so we know if email failed
     }
 }
@@ -247,6 +257,109 @@ async function sendRejectionEmail(email, fullName, region, reason) {
     }
 }
 
+// Function to send bulk WhatsApp group invitation email
+async function sendBulkApprovalEmail(email, fullName, region) {
+    if (!email) return; // nothing to send
+    try {
+        const participantName = fullName || "Participant";
+        const { transporter: emailTransporter, senderEmail } = getEmailConfig(region);
+
+        // Region-specific WhatsApp links and email content
+        let whatsappLink = "";
+        let subject = "";
+        let emailBody = "";
+
+        if (region === "East Rayalaseema") {
+            whatsappLink = "https://chat.whatsapp.com/JW88QUiqz8HFbeX7ri7dZr";
+            subject = "Join SPICON-2026 WhatsApp Group - East Rayalaseema";
+            emailBody = `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; line-height: 1.6; color: #333;">
+                    <p>Dear ${participantName},</p>
+                    
+                    <p>Greetings in the precious name of our Lord Jesus Christ!</p>
+                    
+                    <p>Congratulations once again on the approval of your registration for SPICON-2026 (East Rayalaseema). We thank God for your commitment and are delighted to welcome you to this spiritually enriching conference.</p>
+                    
+                    <p><strong>👉 Important Notice:</strong><br/>
+                    To ensure smooth communication and timely updates, <strong>joining the official SPICON-2026 East Rayalaseema WhatsApp group is mandatory for all registered participants</strong>.</p>
+                    
+                    <p>Please join the group using the link below at the earliest:</p>
+                    
+                    <p><strong>👉 Official WhatsApp Group Link:</strong><br/>
+                    <a href="${whatsappLink}" style="color: #25D366; text-decoration: none; font-weight: bold;">${whatsappLink}</a></p>
+                    
+                    <p>This WhatsApp group will serve as the primary communication channel for:</p>
+                    <ul>
+                        <li>Conference schedules and real-time updates</li>
+                        <li>Venue, accommodation, and travel-related information</li>
+                        <li>Important instructions and announcements from the SPICON-2026 Committee</li>
+                    </ul>
+                    
+                    <p>We kindly request your cooperation in maintaining the sanctity and purpose of the group, keeping all discussions aligned with the objectives of SPICON-2026.</p>
+                    
+                    <p>We prayerfully look forward to meeting you and fellow participants for a blessed time of fellowship, consecration, and spiritual renewal.</p>
+                    
+                    <p>With warm regards and prayers,</p>
+                    
+                    <p><strong>SPICON-2026 Committee</strong><br/>
+                    UESI – AP East Rayalaseema</p>
+                </div>
+            `;
+        } else if (region === "West Rayalaseema") {
+            whatsappLink = "https://chat.whatsapp.com/FAJaJPnaHh07yoObN1Tfpw";
+            subject = "Join SPICON-2026 WhatsApp Group - West Rayalaseema";
+            emailBody = `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; line-height: 1.6; color: #333;">
+                    <p>Dear ${participantName},</p>
+                    
+                    <p>Greetings in the precious name of our Lord Jesus Christ!</p>
+                    
+                    <p>We are delighted to once again congratulate you on the successful approval of your registration for SPICON-2026 (West Rayalaseema). We praise God for your willingness to be part of this blessed Spiritual Life Conference.</p>
+                    
+                    <p>To ensure smooth communication, timely updates, and important announcements regarding the conference, we kindly request you to join the <strong>official SPICON-2026 West Rayalaseema WhatsApp group</strong>.</p>
+                    
+                    <p><strong>👉 Follow this link to join the WhatsApp group:</strong><br/>
+                    <a href="${whatsappLink}" style="color: #25D366; text-decoration: none; font-weight: bold;">${whatsappLink}</a></p>
+                    
+                    <p>This WhatsApp group will be used exclusively for:</p>
+                    <ul>
+                        <li>Conference instructions and schedules</li>
+                        <li>Travel and arrival coordination</li>
+                        <li>Important announcements from the SPICON-2026 Committee</li>
+                    </ul>
+                    
+                    <p>We humbly request all participants to maintain the sanctity and purpose of the group by refraining from unrelated discussions.</p>
+                    
+                    <p>We prayerfully look forward to meeting you in person and experiencing a spiritually enriching time together as we gather around God's Word.</p>
+                    
+                    <p>With prayers and blessings,</p>
+                    
+                    <p><strong>SPICON-2026 Committee</strong><br/>
+                    UESI – AP West Rayalaseema</p>
+                </div>
+            `;
+        } else {
+            throw new Error(`Unknown region: ${region}`);
+        }
+
+        const mailOptions = {
+            from: senderEmail,
+            to: email,
+            subject: subject,
+            html: emailBody,
+        };
+
+        await emailTransporter.sendMail(mailOptions);
+        console.log(`WhatsApp group invitation email sent to ${email} (${region})`);
+        return { success: true, email };
+    } catch (error) {
+        console.error(`❌ Error sending bulk email to ${email} (${region}):`, error.message);
+        if (error.code === 'EAUTH') {
+            console.error(`   Authentication failed. Please verify the WEST_EMAIL_PASS environment variable.`);
+        }
+        return { success: false, email, error: error.message };
+    }
+}
 
 // ==== Multer Storage ====
 const storage = multer.diskStorage({
@@ -260,6 +373,7 @@ const storage = multer.diskStorage({
     cb(null, dir);
   },
   filename: function (req, file, cb) {
+    // Sanitize filename: lowercase, replace spaces with underscores, remove special chars
     const cleanName = file.originalname
       .toLowerCase()              // jpg / png always lowercase
       .replace(/\s+/g, "_")       // spaces → _
@@ -270,7 +384,6 @@ const storage = multer.diskStorage({
     cb(null, filename);
   }
 });
-
 
 const upload = multer({ storage });
 
@@ -451,86 +564,6 @@ router.post(
   }
 );
 
-// ============================================================
-// VIEW PAYMENT SCREENSHOT (CASE & EXTENSION SAFE)
-// ============================================================
-router.get("/registrations/:id/screenshot", async (req, res) => {
-  try {
-    const registration = await Payment.findById(req.params.id);
-
-    if (!registration || !registration.paymentScreenshot) {
-      return res.status(404).json({ message: "Screenshot not found" });
-    }
-
-    const uploadsDir = path.resolve(__dirname, "../uploads");
-
-    // Normalize filename from DB
-    const dbFile = registration.paymentScreenshot.toLowerCase();
-
-    // Find matching file ignoring case
-    const files = fs.readdirSync(uploadsDir);
-    const matchedFile = files.find(
-      (f) => f.toLowerCase() === dbFile
-    );
-
-    if (!matchedFile) {
-      return res.status(404).json({ message: "File missing on server" });
-    }
-
-    // Auto-set correct content type
-    const ext = path.extname(matchedFile).toLowerCase();
-    const mimeTypes = {
-      ".jpg": "image/jpeg",
-      ".jpeg": "image/jpeg",
-      ".png": "image/png",
-    };
-
-    res.setHeader(
-      "Content-Type",
-      mimeTypes[ext] || "application/octet-stream"
-    );
-
-    res.sendFile(path.join(uploadsDir, matchedFile));
-  } catch (err) {
-    console.error("Screenshot view error:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-
-
-
-//--------------------------------------------------
-// DELETE CUSTOMER / REGISTRATION
-//--------------------------------------------------
-router.delete("/registrations/:id", async (req, res) => {
-  try {
-    const id = req.params.id;
-
-    const record = await Payment.findById(id);
-    if (!record) {
-      return res.status(404).json({ success: false, error: "Customer not found" });
-    }
-
-    // If screenshot exists you can also delete from uploads folder (Optional)
-    /*
-    if (record.paymentScreenshot) {
-      const fs = require("fs");
-      const filePath = `uploads/${record.paymentScreenshot}`;
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    }
-    */
-
-    await Payment.findByIdAndDelete(id);
-
-    return res.json({ success: true, message: "Registration deleted successfully" });
-  } catch (err) {
-    console.error("DELETE ERROR:", err);
-    res.status(500).json({ success: false, error: "Server error while deleting" });
-  }
-});
-
-
 
 
 // ============================================================
@@ -577,6 +610,81 @@ router.get("/registrations", async (req, res) => {
   }
 });
 
+// GET all failed emails from database (MUST be before /registrations/:id route)
+router.get("/registrations/failed-emails", async (req, res) => {
+  try {
+    const { region } = req.query;
+    
+    const query = {};
+    if (region) {
+      query.region = region;
+    }
+    
+    const failedEmails = await FailedEmail.find(query)
+      .sort({ createdAt: -1 }) // Newest first
+      .lean();
+    
+    res.json({
+      success: true,
+      data: failedEmails,
+      count: failedEmails.length
+    });
+  } catch (err) {
+    console.error("Error fetching failed emails:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE a failed email by ID (MUST be before /registrations/:id route)
+router.delete("/registrations/failed-emails/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const deletedEmail = await FailedEmail.findByIdAndDelete(id);
+    
+    if (!deletedEmail) {
+      return res.status(404).json({ error: "Failed email record not found" });
+    }
+    
+    res.json({
+      success: true,
+      message: "Failed email record deleted successfully"
+    });
+  } catch (err) {
+    console.error("Error deleting failed email:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET complete user details for a failed email by email address (MUST be before /registrations/:id route)
+router.get("/registrations/failed-emails/:email/details", async (req, res) => {
+  try {
+    const { email } = req.params;
+    
+    // Decode email if it's URL encoded
+    const decodedEmail = decodeURIComponent(email);
+    
+    // Find the registration by email
+    const registration = await Payment.findOne({ 
+      email: decodedEmail 
+    }).lean();
+    
+    if (!registration) {
+      return res.status(404).json({ 
+        error: "Registration not found for this email address" 
+      });
+    }
+    
+    res.json({
+      success: true,
+      data: registration
+    });
+  } catch (err) {
+    console.error("Error fetching user details:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get single registration details
 router.get("/registrations/:id", async (req, res) => {
   try {
@@ -590,6 +698,54 @@ router.get("/registrations/:id", async (req, res) => {
   } catch (err) {
     console.error("Error fetching registration:", err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// VIEW PAYMENT SCREENSHOT (CASE & EXTENSION SAFE)
+// ============================================================
+router.get("/registrations/:id/screenshot", async (req, res) => {
+  try {
+    const registration = await Payment.findById(req.params.id);
+
+    if (!registration || !registration.paymentScreenshot) {
+      return res.status(404).json({ message: "Screenshot not found" });
+    }
+
+    const uploadsDir = path.resolve(__dirname, "../uploads");
+
+    // Normalize filename from DB
+    const dbFile = registration.paymentScreenshot.toLowerCase();
+
+    // Find matching file ignoring case
+    const files = fs.readdirSync(uploadsDir);
+    const matchedFile = files.find(
+      (f) => f.toLowerCase() === dbFile
+    );
+
+    if (!matchedFile) {
+      return res.status(404).json({ message: "File missing on server" });
+    }
+
+    // Auto-set correct content type
+    const ext = path.extname(matchedFile).toLowerCase();
+    const mimeTypes = {
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".png": "image/png",
+      ".gif": "image/gif",
+      ".webp": "image/webp",
+    };
+
+    res.setHeader(
+      "Content-Type",
+      mimeTypes[ext] || "application/octet-stream"
+    );
+
+    res.sendFile(path.join(uploadsDir, matchedFile));
+  } catch (err) {
+    console.error("Screenshot view error:", err);
+    res.status(500).json({ message: "Server error" });
   }
 });
 
@@ -703,7 +859,314 @@ router.post("/registrations/:id/reject", async (req, res) => {
   }
 });
 
+// Send bulk WhatsApp group invitation emails to all approved registrations
+router.post("/registrations/send-bulk-emails", async (req, res) => {
+  try {
+    const { region } = req.query; // Optional: "West Rayalaseema" or "East Rayalaseema"
+    
+    // Build query for approved registrations
+    const query = { registrationStatus: "approved" };
+    
+    // Filter by region if specified
+    if (region) {
+      if (region !== "West Rayalaseema" && region !== "East Rayalaseema") {
+        return res.status(400).json({ 
+          error: "Invalid region. Must be 'West Rayalaseema' or 'East Rayalaseema'" 
+        });
+      }
+      query.region = region;
+    }
+    
+    // Find all approved registrations matching the query
+    const approvedRegistrations = await Payment.find(query);
+    
+    if (approvedRegistrations.length === 0) {
+      return res.json({
+        success: true,
+        message: "No approved registrations found",
+        data: {
+          totalSent: 0,
+          totalFailed: 0,
+          westRayalaseema: { sent: 0, failed: 0 },
+          eastRayalaseema: { sent: 0, failed: 0 },
+          failedEmails: []
+        }
+      });
+    }
+    
+    // Group by region and send emails
+    const results = {
+      totalSent: 0,
+      totalFailed: 0,
+      westRayalaseema: { sent: 0, failed: 0 },
+      eastRayalaseema: { sent: 0, failed: 0 },
+      failedEmails: []
+    };
+    
+    // Send emails sequentially with delay to avoid Gmail rate limiting
+    // Delay between emails: 12-15 seconds (randomized to avoid pattern detection)
+    const minDelay = 12000; // 12 seconds
+    const maxDelay = 15000; // 15 seconds
+    
+    for (let i = 0; i < approvedRegistrations.length; i++) {
+      const registration = approvedRegistrations[i];
+      
+      // Skip if no email
+      if (!registration.email) {
+        results.failedEmails.push({
+          email: "No email provided",
+          mobile: registration.mobile || "N/A",
+          name: registration.fullName || registration.name || "Unknown",
+          fullName: registration.fullName || "N/A",
+          surname: registration.surname || "N/A",
+          region: registration.region,
+          district: registration.district || "N/A",
+          iceuEgf: registration.iceuEgf || "N/A",
+          groupType: registration.groupType || "N/A",
+          uniqueId: registration.uniqueId || "N/A",
+          error: "Email address missing"
+        });
+        if (registration.region === "West Rayalaseema") {
+          results.westRayalaseema.failed++;
+        } else if (registration.region === "East Rayalaseema") {
+          results.eastRayalaseema.failed++;
+        }
+        results.totalFailed++;
+        continue; // Skip to next registration
+      }
+      
+      // Send email
+      const emailResult = await sendBulkApprovalEmail(
+        registration.email,
+        registration.fullName || registration.name,
+        registration.region
+      );
+      
+      if (emailResult.success) {
+        results.totalSent++;
+        if (registration.region === "West Rayalaseema") {
+          results.westRayalaseema.sent++;
+        } else if (registration.region === "East Rayalaseema") {
+          results.eastRayalaseema.sent++;
+        }
+        console.log(`✓ Email ${i + 1}/${approvedRegistrations.length} sent to ${registration.email}`);
+      } else {
+        results.totalFailed++;
+        // Include all registration details for failed emails
+        const failedEmailData = {
+          email: registration.email,
+          mobile: registration.mobile || "N/A",
+          name: registration.fullName || registration.name || "Unknown",
+          fullName: registration.fullName || "N/A",
+          surname: registration.surname || "N/A",
+          region: registration.region,
+          district: registration.district || "N/A",
+          iceuEgf: registration.iceuEgf || "N/A",
+          groupType: registration.groupType || "N/A",
+          uniqueId: registration.uniqueId || "N/A",
+          error: emailResult.error,
+          registrationId: registration._id
+        };
+        results.failedEmails.push(failedEmailData);
+        // Save to database
+        try {
+          await FailedEmail.create(failedEmailData);
+        } catch (dbError) {
+          console.error("Error saving failed email to database:", dbError);
+        }
+        if (registration.region === "West Rayalaseema") {
+          results.westRayalaseema.failed++;
+        } else if (registration.region === "East Rayalaseema") {
+          results.eastRayalaseema.failed++;
+        }
+        console.log(`✗ Email ${i + 1}/${approvedRegistrations.length} failed for ${registration.email}: ${emailResult.error}`);
+      }
+      
+      // Add delay before next email (except for the last one)
+      if (i < approvedRegistrations.length - 1) {
+        const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
+        console.log(`⏳ Waiting ${delay / 1000} seconds before next email...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: "Bulk emails sent successfully",
+      data: results
+    });
+    
+  } catch (err) {
+    console.error("Error sending bulk emails:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
+// Resend emails to specific failed email addresses
+router.post("/registrations/resend-failed-emails", async (req, res) => {
+  try {
+    const { failedEmails } = req.body; // Array of email addresses or full failed email objects
+    
+    if (!failedEmails || !Array.isArray(failedEmails) || failedEmails.length === 0) {
+      return res.status(400).json({ 
+        error: "failedEmails array is required and must not be empty" 
+      });
+    }
+    
+    // Extract email addresses from the array (handle both string emails and full objects)
+    const emailAddresses = failedEmails.map(item => 
+      typeof item === 'string' ? item : item.email
+    ).filter(email => email && email !== "No email provided");
+    
+    if (emailAddresses.length === 0) {
+      return res.status(400).json({ 
+        error: "No valid email addresses found in failedEmails array" 
+      });
+    }
+    
+    // Find registrations matching these email addresses
+    const registrations = await Payment.find({ 
+      email: { $in: emailAddresses },
+      registrationStatus: "approved"
+    });
+    
+    if (registrations.length === 0) {
+      return res.json({
+        success: true,
+        message: "No approved registrations found for the provided email addresses",
+        data: {
+          totalSent: 0,
+          totalFailed: emailAddresses.length,
+          westRayalaseema: { sent: 0, failed: 0 },
+          eastRayalaseema: { sent: 0, failed: 0 },
+          failedEmails: emailAddresses.map(email => ({
+            email,
+            error: "Registration not found or not approved"
+          }))
+        }
+      });
+    }
+    
+    // Group by region and send emails
+    const results = {
+      totalSent: 0,
+      totalFailed: 0,
+      westRayalaseema: { sent: 0, failed: 0 },
+      eastRayalaseema: { sent: 0, failed: 0 },
+      failedEmails: []
+    };
+    
+    // Send emails sequentially with delay to avoid Gmail rate limiting
+    // Delay between emails: 12-15 seconds (randomized to avoid pattern detection)
+    const minDelay = 12000; // 12 seconds
+    const maxDelay = 15000; // 15 seconds
+    
+    for (let i = 0; i < registrations.length; i++) {
+      const registration = registrations[i];
+      
+      // Skip if no email
+      if (!registration.email) {
+        const failedEmailData = {
+          email: "No email provided",
+          mobile: registration.mobile || "N/A",
+          name: registration.fullName || registration.name || "Unknown",
+          fullName: registration.fullName || "N/A",
+          surname: registration.surname || "N/A",
+          region: registration.region,
+          district: registration.district || "N/A",
+          iceuEgf: registration.iceuEgf || "N/A",
+          groupType: registration.groupType || "N/A",
+          uniqueId: registration.uniqueId || "N/A",
+          error: "Email address missing",
+          registrationId: registration._id
+        };
+        results.failedEmails.push(failedEmailData);
+        // Save to database
+        try {
+          await FailedEmail.create(failedEmailData);
+        } catch (dbError) {
+          console.error("Error saving failed email to database:", dbError);
+        }
+        if (registration.region === "West Rayalaseema") {
+          results.westRayalaseema.failed++;
+        } else if (registration.region === "East Rayalaseema") {
+          results.eastRayalaseema.failed++;
+        }
+        results.totalFailed++;
+        continue; // Skip to next registration
+      }
+      
+      // Send email
+      const emailResult = await sendBulkApprovalEmail(
+        registration.email,
+        registration.fullName || registration.name,
+        registration.region
+      );
+      
+      if (emailResult.success) {
+        results.totalSent++;
+        if (registration.region === "West Rayalaseema") {
+          results.westRayalaseema.sent++;
+        } else if (registration.region === "East Rayalaseema") {
+          results.eastRayalaseema.sent++;
+        }
+        // Delete from failed emails database if it exists
+        try {
+          await FailedEmail.deleteMany({ email: registration.email });
+        } catch (dbError) {
+          console.error("Error deleting failed email from database:", dbError);
+        }
+        console.log(`✓ Resend ${i + 1}/${registrations.length} sent to ${registration.email}`);
+      } else {
+        results.totalFailed++;
+        const failedEmailData = {
+          email: registration.email,
+          mobile: registration.mobile || "N/A",
+          name: registration.fullName || registration.name || "Unknown",
+          fullName: registration.fullName || "N/A",
+          surname: registration.surname || "N/A",
+          region: registration.region,
+          district: registration.district || "N/A",
+          iceuEgf: registration.iceuEgf || "N/A",
+          groupType: registration.groupType || "N/A",
+          uniqueId: registration.uniqueId || "N/A",
+          error: emailResult.error,
+          registrationId: registration._id
+        };
+        results.failedEmails.push(failedEmailData);
+        // Save to database
+        try {
+          await FailedEmail.create(failedEmailData);
+        } catch (dbError) {
+          console.error("Error saving failed email to database:", dbError);
+        }
+        if (registration.region === "West Rayalaseema") {
+          results.westRayalaseema.failed++;
+        } else if (registration.region === "East Rayalaseema") {
+          results.eastRayalaseema.failed++;
+        }
+        console.log(`✗ Resend ${i + 1}/${registrations.length} failed for ${registration.email}: ${emailResult.error}`);
+      }
+      
+      // Add delay before next email (except for the last one)
+      if (i < registrations.length - 1) {
+        const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
+        console.log(`⏳ Waiting ${delay / 1000} seconds before next email...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: "Resend emails completed",
+      data: results
+    });
+    
+  } catch (err) {
+    console.error("Error resending failed emails:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // GET SINGLE CUSTOMER DETAILS
 router.get("/customer/:id", async (req, res) => {
@@ -724,12 +1187,75 @@ router.get("/customer/:id", async (req, res) => {
 // 3) Get summary
 router.get("/summary", async (req, res) => {
   try {
-    const payments = await Payment.find();
+    const { region } = req.query;
+    const query = region ? { region } : {};
+    const payments = await Payment.find(query);
     const totalAmount = payments.reduce((s, p) => s + (p.totalAmount || 0), 0);
-    const totalPaid = payments.reduce((s, p) => s + (p.paidAmount || 0), 0);
+    const totalPaid = payments.reduce((s, p) => s + (p.amountPaid || 0), 0);
     const balance = totalAmount - totalPaid;
     res.json({ totalAmount, totalPaid, balance });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get registrar payment summary (detailed)
+router.get("/registrar/payment-summary", async (req, res) => {
+  try {
+    const { region } = req.query;
+    if (!region) {
+      return res.status(400).json({ error: "Region is required" });
+    }
+
+    // Get all payments for the region
+    const payments = await Payment.find({ region, registrationStatus: "approved" });
+    
+    // Calculate payment totals
+    const totalAmount = payments.reduce((sum, p) => sum + (p.totalAmount || 0), 0);
+    const totalPaid = payments.reduce((sum, p) => sum + (p.amountPaid || 0), 0);
+    const totalBalance = payments.reduce((sum, p) => sum + (p.balance || 0), 0);
+
+    // Get worker requests total for the region
+    // Note: WorkerRequest doesn't have region field, so we'll get all
+    const workerRequests = await WorkerRequest.find();
+    const workerRequestedTotal = workerRequests.reduce((sum, w) => sum + (w.amount || 0), 0);
+    const workerPaidTotal = workerRequests
+      .filter(w => w.status === "paid")
+      .reduce((sum, w) => sum + (w.amount || 0), 0);
+
+    // Get payment requests (from coordinators/lac_convener) for the region
+    const paymentRequests = await PaymentRequest.find({ region });
+    const paymentRequestedTotal = paymentRequests.reduce((sum, pr) => sum + (pr.requestedAmount || 0), 0);
+    // Sum all paid amounts (paidAmount field exists in PaymentRequest model)
+    const paymentPaidTotal = paymentRequests.reduce((sum, pr) => sum + (pr.paidAmount || 0), 0);
+
+    // Payment details for table
+    const paymentDetails = payments.map(p => ({
+      _id: p._id,
+      name: p.name || p.fullName || "N/A",
+      uniqueId: p.uniqueId || "N/A",
+      groupType: p.groupType || "N/A",
+      totalAmount: p.totalAmount || 0,
+      amountPaid: p.amountPaid || 0,
+      balance: p.balance || (p.totalAmount || 0) - (p.amountPaid || 0),
+    }));
+
+    res.json({
+      success: true,
+      region,
+      paymentDetails,
+      summary: {
+        totalAmount,
+        totalPaid,
+        totalBalance,
+        workerRequestedTotal,
+        workerPaidTotal,
+        paymentRequestedTotal,
+        paymentPaidTotal,
+      }
+    });
+  } catch (err) {
+    console.error("Error in registrar payment summary:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -768,6 +1294,39 @@ router.put("/:id", async (req, res) => {
     if (update.profession) p.profession = update.profession;
     if (typeof update.totalAmount !== "undefined") p.totalAmount = Number(update.totalAmount);
 
+    // Support payment updates (for pending payment module)
+    if (update.transactionId && typeof update.amountPaid !== "undefined") {
+      // Calculate the new payment amount (difference between new total and existing)
+      const existingAmountPaid = p.amountPaid || 0;
+      const newTotalAmountPaid = Number(update.amountPaid);
+      const newPaymentAmount = newTotalAmountPaid - existingAmountPaid;
+      
+      // If there's a new payment, add it to transactions array
+      if (newPaymentAmount > 0) {
+        if (!p.transactions) p.transactions = [];
+        p.transactions.push({
+          amount: newPaymentAmount,
+          note: `Txn: ${update.transactionId}`,
+          date: new Date(update.dateOfPayment || Date.now()),
+        });
+      }
+      
+      // Update transaction ID and date (use latest)
+      p.transactionId = update.transactionId;
+      if (update.dateOfPayment) {
+        p.dateOfPayment = update.dateOfPayment;
+      }
+    }
+    // Preserve registration status if provided (to prevent re-approval)
+    if (update.registrationStatus) {
+      p.registrationStatus = update.registrationStatus;
+    }
+    // If transactions array is provided directly, update it (for payment history)
+    if (update.transactions && Array.isArray(update.transactions)) {
+      p.transactions = update.transactions;
+    }
+
+    // Recalculate will update amountPaid from transactions array
     p.recalculate();
     await p.save();
     res.json(p);
@@ -1104,6 +1663,236 @@ router.get("/payment-requests/role/:role", async (req, res) => {
     });
   } catch (err) {
     console.error("Error fetching payment requests by role:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// PAYMENT VALIDATION ENDPOINT - Validate payments from PhonePe PDF
+// ============================================================
+router.post("/validate-payments", upload.single("pdf"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No PDF file uploaded" });
+    }
+
+    const { region } = req.body;
+    if (!region) {
+      return res.status(400).json({ error: "Region is required" });
+    }
+
+    // Read and parse PDF
+    const pdfBuffer = fs.readFileSync(req.file.path);
+    const pdfData = await pdfParse(pdfBuffer);
+    const pdfText = pdfData.text;
+
+    console.log("PDF parsed, extracting transactions...");
+    console.log("PDF text length:", pdfText.length);
+    console.log("First 500 chars:", pdfText.substring(0, 500));
+
+    // Extract transaction IDs and amounts from PhonePe PDF
+    // PhonePe format based on image:
+    // - Transaction ID: T2512210706583647360982 (starts with T, followed by digits, usually 20-22 chars)
+    // - Amount: ₹250, ₹100, etc. (₹ symbol followed by number, no decimals typically)
+    // - Format: "Transaction ID T2512210706583647360982" or "T2512210706583647360982"
+    
+    const allExtractedTransactions = [];
+    
+    // Pattern for PhonePe Transaction IDs: T followed by 15-25 digits
+    const phonePeTransactionIdPattern = /T\d{15,25}/g;
+    
+    // Pattern for amounts with ₹ symbol: ₹ followed by number (optional comma separators)
+    const amountPattern = /₹\s*(\d{1,3}(?:,\d{2,3})*)/g;
+    
+    // Split text into lines
+    const lines = pdfText.split('\n');
+    
+    // Strategy: Look for lines containing Transaction IDs (T + digits)
+    // Then find the associated amount, which is usually in the same row/line or nearby
+    
+    // First, find all Transaction IDs in the PDF
+    const allTransactionIds = [];
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      let match;
+      phonePeTransactionIdPattern.lastIndex = 0;
+      while ((match = phonePeTransactionIdPattern.exec(line)) !== null) {
+        allTransactionIds.push({
+          id: match[0],
+          lineIndex: i,
+          position: match.index
+        });
+      }
+    }
+    
+    console.log(`Found ${allTransactionIds.length} Transaction IDs in PDF`);
+    
+    // For each Transaction ID, find the associated amount
+    // Amount is usually in the same line or in the "Amount" column on the right
+    for (const txIdInfo of allTransactionIds) {
+      const { id, lineIndex } = txIdInfo;
+      
+      // Search in the same line and nearby lines for the amount
+      // PhonePe table structure: Transaction ID and Amount are usually on the same row
+      const searchRange = [
+        lines[Math.max(0, lineIndex - 1)] || '',
+        lines[lineIndex] || '',
+        lines[Math.min(lines.length - 1, lineIndex + 1)] || ''
+      ].join(' ');
+      
+      // Find amounts in the search range
+      const amounts = [];
+      let amountMatch;
+      amountPattern.lastIndex = 0;
+      while ((amountMatch = amountPattern.exec(searchRange)) !== null) {
+        const amountStr = amountMatch[1].replace(/,/g, '');
+        const amount = parseFloat(amountStr);
+        // PhonePe amounts are typically round numbers (no decimals) and reasonable range
+        if (!isNaN(amount) && amount > 0 && amount <= 100000 && amount === Math.floor(amount)) {
+          amounts.push(amount);
+        }
+      }
+      
+      // If we found amounts, use the first one (usually there's only one per transaction)
+      if (amounts.length > 0) {
+        allExtractedTransactions.push({
+          transactionId: id,
+          amount: amounts[0]
+        });
+      } else {
+        // If no amount found nearby, try a different approach:
+        // Look for amount in the same line after the Transaction ID
+        const currentLine = lines[lineIndex];
+        const afterTxId = currentLine.substring(currentLine.indexOf(id) + id.length);
+        amountPattern.lastIndex = 0;
+        const amountMatchAfter = amountPattern.exec(afterTxId);
+        if (amountMatchAfter) {
+          const amountStr = amountMatchAfter[1].replace(/,/g, '');
+          const amount = parseFloat(amountStr);
+          if (!isNaN(amount) && amount > 0 && amount <= 100000) {
+            allExtractedTransactions.push({
+              transactionId: id,
+              amount: amount
+            });
+          }
+        }
+      }
+    }
+    
+    // Remove duplicates (same transaction ID)
+    const uniqueTransactions = [];
+    const seenIds = new Set();
+    for (const tx of allExtractedTransactions) {
+      if (!seenIds.has(tx.transactionId)) {
+        seenIds.add(tx.transactionId);
+        uniqueTransactions.push(tx);
+      }
+    }
+    
+    console.log(`Extracted ${uniqueTransactions.length} unique transactions:`, uniqueTransactions.slice(0, 10));
+    
+    const extractedTransactions = uniqueTransactions;
+
+    // Get all registrations for the specified region
+    const registrations = await Payment.find({ region }).lean();
+
+    console.log(`Found ${registrations.length} registrations for region: ${region}`);
+
+    // Validate transactions
+    const validated = [];
+    const nonValidated = [];
+    
+    // Create a map of transaction IDs from PDF for quick lookup
+    const pdfTransactionMap = new Map();
+    extractedTransactions.forEach(tx => {
+      const normalizedTxId = tx.transactionId.trim().toUpperCase();
+      if (!pdfTransactionMap.has(normalizedTxId)) {
+        pdfTransactionMap.set(normalizedTxId, []);
+      }
+      pdfTransactionMap.get(normalizedTxId).push(tx.amount);
+    });
+
+    // Check each registration against PDF transactions
+    registrations.forEach(reg => {
+      if (!reg.transactionId || !reg.amountPaid) {
+        nonValidated.push({
+          ...reg,
+          validationReason: "Transaction ID or Amount not found in registration"
+        });
+        return;
+      }
+
+      // Normalize transaction ID - remove whitespace, convert to uppercase
+      const regTxId = (reg.transactionId || '').trim().toUpperCase();
+      const regAmount = Number(reg.amountPaid);
+
+      console.log(`Checking registration: ${reg.uniqueId || reg.name}, TX ID: ${regTxId}, Amount: ${regAmount}`);
+      console.log(`Available PDF TX IDs (sample):`, Array.from(pdfTransactionMap.keys()).slice(0, 5));
+
+      // Check if transaction ID exists in PDF
+      if (!pdfTransactionMap.has(regTxId)) {
+        // Try to find partial matches or similar IDs for debugging
+        const similarIds = Array.from(pdfTransactionMap.keys()).filter(pdfId => 
+          pdfId.includes(regTxId.substring(0, 10)) || regTxId.includes(pdfId.substring(0, 10))
+        );
+        
+        nonValidated.push({
+          ...reg,
+          validationReason: `Transaction ID not found in PDF. Looking for: ${regTxId}${similarIds.length > 0 ? `. Similar IDs found: ${similarIds.slice(0, 3).join(', ')}` : ''}`
+        });
+        return;
+      }
+
+      // Check if amount matches
+      const pdfAmounts = pdfTransactionMap.get(regTxId);
+      const amountMatches = pdfAmounts.some(pdfAmount => 
+        Math.abs(pdfAmount - regAmount) < 0.01 // Allow small floating point differences
+      );
+
+      if (!amountMatches) {
+        nonValidated.push({
+          ...reg,
+          validationReason: `Amount mismatch. Expected: ₹${regAmount}, Found in PDF: ₹${pdfAmounts.join(', ₹')}`
+        });
+        return;
+      }
+
+      // Both transaction ID and amount match
+      console.log(`✓ Validated: ${reg.uniqueId || reg.name} - TX ID: ${regTxId}, Amount: ₹${regAmount}`);
+      validated.push(reg);
+    });
+
+    // Clean up uploaded PDF file
+    try {
+      fs.unlinkSync(req.file.path);
+    } catch (unlinkErr) {
+      console.error("Error deleting PDF file:", unlinkErr);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        validated,
+        nonValidated,
+        extractedCount: extractedTransactions.length,
+        validatedCount: validated.length,
+        nonValidatedCount: nonValidated.length
+      }
+    });
+
+  } catch (err) {
+    console.error("Error validating payments:", err);
+    
+    // Clean up uploaded PDF file on error
+    if (req.file && req.file.path) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (unlinkErr) {
+        console.error("Error deleting PDF file:", unlinkErr);
+      }
+    }
+    
     res.status(500).json({ error: err.message });
   }
 });
